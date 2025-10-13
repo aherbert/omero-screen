@@ -12,6 +12,7 @@ import os
 import random
 from typing import Any
 
+import itk
 import matplotlib
 import matplotlib.pyplot as plt
 import numpy as np
@@ -37,6 +38,7 @@ from omero_utils.attachments import (
 )
 from omero_utils.images import upload_masks
 from omero_utils.message import OmeroError, PlateDataError, PlateNotFoundError
+from pystackreg import StackReg
 from scipy.optimize import linear_sum_assignment
 
 from omero_screen.config import get_logger
@@ -678,7 +680,49 @@ def _translation(
         t1 -= shape[1]
     # t0 (first axis) corresponds to y.
     # Return the mapping from fixed to moving.
-    return int(-t1), int(-t0)
+    (x, y) = int(-t1), int(-t0)
+
+    # Try PyStackReg
+    sr = StackReg(StackReg.TRANSLATION)
+    r1 = sr.register(im1, im2)
+    sr = StackReg(StackReg.RIGID_BODY)
+    r2 = sr.register(im1, im2)
+    theta = np.arctan2(r2[1, 0], r2[0, 0]) * 360 / np.pi
+    # itk-elastix
+    fixed_image = itk.image_view_from_array(im1)
+    moving_image = itk.image_view_from_array(im2)
+    resolutions = 1
+    parameter_object = itk.ParameterObject.New()
+    parameter_object.AddParameterMap(
+        parameter_object.GetDefaultParameterMap("translation", resolutions)
+    )
+    _, result_transform_parameters = itk.elastix_registration_method(
+        fixed_image,
+        moving_image,
+        parameter_object=parameter_object,
+        log_to_console=False,
+    )
+    p = result_transform_parameters.GetParameter(0, "TransformParameters")
+    p = [float(x) for x in p]
+    parameter_object = itk.ParameterObject.New()
+    parameter_object.AddParameterMap(
+        parameter_object.GetDefaultParameterMap("rigid", resolutions)
+    )
+    _, result_transform_parameters = itk.elastix_registration_method(
+        fixed_image,
+        moving_image,
+        parameter_object=parameter_object,
+        log_to_console=False,
+    )
+    p2 = result_transform_parameters.GetParameter(0, "TransformParameters")
+    p2 = [float(x) for x in p2]
+    p2[0] *= 360 / np.pi
+
+    print(
+        f"trans: ({x}, {y}) : SR trans ({r1[0, 2]:.1f}, {r1[1, 2]:.1f}) : rigid ({theta:.1f}, {r2[0, 2]:.1f}, {r2[1, 2]:.1f}) : itk trans ({p[0]:.1f}, {p[1]:.1f}) : itk rigid ({p2[0]:.1f}, {p2[1]:.1f}, {p2[2]:.1f})"
+    )
+
+    return (x, y)
 
 
 def _translate(
