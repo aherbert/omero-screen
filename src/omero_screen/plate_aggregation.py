@@ -19,6 +19,7 @@ import numpy as np
 import numpy.typing as npt
 import pandas as pd
 import scipy.spatial
+import SimpleITK as sitk
 from ezomero import get_image
 from matplotlib.collections import LineCollection
 from numpy.fft import fft2, ifft2
@@ -687,7 +688,7 @@ def _translation(
     r1 = sr.register(im1, im2)
     sr = StackReg(StackReg.RIGID_BODY)
     r2 = sr.register(im1, im2)
-    theta = np.arctan2(r2[1, 0], r2[0, 0]) * 360 / np.pi
+    theta = np.arctan2(r2[1, 0], r2[0, 0]) * 180 / np.pi
     # itk-elastix
     fixed_image = itk.image_view_from_array(im1)
     moving_image = itk.image_view_from_array(im2)
@@ -716,10 +717,38 @@ def _translation(
     )
     p2 = result_transform_parameters.GetParameter(0, "TransformParameters")
     p2 = [float(x) for x in p2]
-    p2[0] *= 360 / np.pi
+    p2[0] *= 180 / np.pi
+    # Simple ITK
+    fixed = sitk.GetImageFromArray(im1.astype(np.float32))
+    moving = sitk.GetImageFromArray(im2.astype(np.float32))
+    R = sitk.ImageRegistrationMethod()
+    # R.SetMetricAsMeanSquares()  # Does not work very well
+    R.SetMetricAsCorrelation()
+    R.SetOptimizerAsRegularStepGradientDescent(4.0, 0.01, 200)
+    R.SetInterpolator(sitk.sitkLinear)
+    R.SetInitialTransform(sitk.TranslationTransform(fixed.GetDimension()))
+    outTx = R.Execute(fixed, moving)
+    t = outTx.GetOffset()
+
+    # This transform does not fit at all.
+    R2 = sitk.ImageRegistrationMethod()
+    R2.SetMetricAsCorrelation()
+    R2.SetOptimizerAsRegularStepGradientDescent(4.0, 0.01, 200)
+    R2.SetInterpolator(sitk.sitkLinear)
+    R2.SetInitialTransform(sitk.Euler2DTransform())
+    R2.SetOptimizerScalesFromPhysicalShift()  # this is important
+    outTx = R2.Execute(fixed, moving)
+    angle = outTx.GetAngle() * 180 / np.pi
+    # map to domain [-180, 180)
+    if angle > 180:
+        angle -= 360
+    t2 = (angle,) + outTx.GetTranslation()
+
+    # Note: We could initialise with FFT translation result...
+    # Final result will be a combination of the two.
 
     print(
-        f"trans: ({x}, {y}) : SR trans ({r1[0, 2]:.1f}, {r1[1, 2]:.1f}) : rigid ({theta:.1f}, {r2[0, 2]:.1f}, {r2[1, 2]:.1f}) : itk trans ({p[0]:.1f}, {p[1]:.1f}) : itk rigid ({p2[0]:.1f}, {p2[1]:.1f}, {p2[2]:.1f})"
+        f"trans: ({x}, {y}) : SR trans ({r1[0, 2]:.1f}, {r1[1, 2]:.1f}) : rigid ({theta:.1f}, {r2[0, 2]:.1f}, {r2[1, 2]:.1f}) : itk trans ({p[0]:.1f}, {p[1]:.1f}) : itk rigid ({p2[0]:.1f}, {p2[1]:.1f}, {p2[2]:.1f}) : sitk trans ({t[0]:.1f}, {t[1]:.1f}) : sitk rigid ({t2[0]:.1f}, {t2[1]:.1f}, {t2[2]:.1f})"
     )
 
     return (x, y)
