@@ -730,12 +730,17 @@ def _translation(
     outTx = R.Execute(fixed, moving)
     t = outTx.GetOffset()
 
-    # This transform does not fit at all.
     R2 = sitk.ImageRegistrationMethod()
     R2.SetMetricAsCorrelation()
     R2.SetOptimizerAsRegularStepGradientDescent(4.0, 0.01, 200)
     R2.SetInterpolator(sitk.sitkLinear)
-    R2.SetInitialTransform(sitk.Euler2DTransform())
+    it = sitk.CenteredTransformInitializer(
+        fixed,
+        moving,
+        sitk.Euler2DTransform(),
+        sitk.CenteredTransformInitializerFilter.GEOMETRY,
+    )
+    R2.SetInitialTransform(it)
     R2.SetOptimizerScalesFromPhysicalShift()  # this is important
     outTx = R2.Execute(fixed, moving)
     angle = outTx.GetAngle() * 180 / np.pi
@@ -744,11 +749,27 @@ def _translation(
         angle -= 360
     t2 = (angle,) + outTx.GetTranslation()
 
-    # Note: We could initialise with FFT translation result...
-    # Final result will be a combination of the two.
+    # Initialise with FFT translation result...
+    it = sitk.CenteredTransformInitializer(
+        fixed,
+        moving,
+        sitk.Euler2DTransform(),
+        sitk.CenteredTransformInitializerFilter.GEOMETRY,
+    )
+    it.SetTranslation((x, y))
+    R2.SetInitialTransform(it)
+    R2.SetShrinkFactorsPerLevel(shrinkFactors=[4, 2, 1])
+    R2.SetSmoothingSigmasPerLevel(smoothingSigmas=[2, 1, 0])
+    R2.SmoothingSigmasAreSpecifiedInPhysicalUnitsOn()
+    outTx = R2.Execute(fixed, moving)
+    angle = outTx.GetAngle() * 180 / np.pi
+    # map to domain [-180, 180)
+    if angle > 180:
+        angle -= 360
+    t3 = (angle,) + outTx.GetTranslation()
 
     print(
-        f"trans: ({x}, {y}) : SR trans ({r1[0, 2]:.1f}, {r1[1, 2]:.1f}) : rigid ({theta:.1f}, {r2[0, 2]:.1f}, {r2[1, 2]:.1f}) : itk trans ({p[0]:.1f}, {p[1]:.1f}) : itk rigid ({p2[0]:.1f}, {p2[1]:.1f}, {p2[2]:.1f}) : sitk trans ({t[0]:.1f}, {t[1]:.1f}) : sitk rigid ({t2[0]:.1f}, {t2[1]:.1f}, {t2[2]:.1f})"
+        f"trans: ({x}, {y}) : SR trans ({r1[0, 2]:.1f}, {r1[1, 2]:.1f}) : rigid ({theta:.1f}, {r2[0, 2]:.1f}, {r2[1, 2]:.1f}) : itk trans ({p[0]:.1f}, {p[1]:.1f}) : itk rigid ({p2[0]:.1f}, {p2[1]:.1f}, {p2[2]:.1f}) : sitk trans ({t[0]:.1f}, {t[1]:.1f}) : sitk rigid ({t2[0]:.1f}, {t2[1]:.1f}, {t2[2]:.1f}) : sitk rigid2 ({t3[0]:.5f}, {t3[1]:.1f}, {t3[2]:.1f})"
     )
 
     return (x, y)
